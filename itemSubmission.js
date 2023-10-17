@@ -4,7 +4,7 @@ AWS.config.update({ region: 'us-west-2' });
 const sns = new AWS.SNS();
 
 const params = {
-  TopicArn: 'arn:aws:sns:us-west-2:783478094927:itemSubmission',
+  TopicArn: 'arn:aws:sns:us-west-2:067714926294:itemSubmission',
   Message: JSON.stringify(itemData),
 };
 
