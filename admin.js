@@ -1,11 +1,13 @@
 'use strict';
 
-var credentials = new AWS.SharedIniFileCredentials({profile: 'work-account'});
-AWS.config.credentials = credentials
 
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const { Consumer } = require('sqs-consumer');
 const AWS = require('aws-sdk');
+
+var credentials = new AWS.SharedIniFileCredentials({profile: 'work-account'});
+AWS.config.credentials = credentials
+
 AWS.config.update({ region: 'us-west-2' })
 
 const queueUrl = 'https://sqs.us-west-2.amazonaws.com/067714926294/itemReview' // Auctions Queue URL
