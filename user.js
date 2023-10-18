@@ -22,7 +22,7 @@ const itemPayload = {
     category: event.category,
     createdBy: event.createdBy,
     description: event.description,
-    itemName: event.titemName,
+    itemName: event.itemName,
     itemType: event.itemType,
 }
 
