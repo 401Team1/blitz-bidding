@@ -60,4 +60,3 @@ rl.question('Enter category: ', (category) => {
         });
     });
 });
-

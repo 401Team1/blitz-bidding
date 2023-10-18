@@ -1,19 +1,35 @@
 'use strict';
 
+const axios = require('axios');
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 const AWS = require('aws-sdk');
 
-var credentials = new AWS.SharedIniFileCredentials({profile: 'work-account'});
-AWS.config.credentials = credentials
-
-AWS.config.update({ region: 'us-west-2' })
+var credentials = new AWS.SharedIniFileCredentials({ profile: 'work-account' });
+AWS.config.credentials = credentials;
+AWS.config.update({ region: 'us-west-2' });
 
 const itemReviewQueueUrl = 'https://sqs.us-west-2.amazonaws.com/067714926294/itemReview';
 const auctionQueueUrl = 'https://sqs.us-west-2.amazonaws.com/067714926294/liveAuction';
 
 const sqsClient = new SQSClient({ region: 'us-west-2' });
 const snsClient = new SNSClient({ region: 'us-west-2' });
+
+function isItemFilledOut(item) {
+    return Object.values(item).every(value => value && value.trim() !== '' && !value.startsWith('Enter'));
+}
+
+async function pushItemToLiveAuctionApi(item) {
+    const apiUrl = 'https://51d6k7oxwk.execute-api.us-west-2.amazonaws.com/dev/auctions';
+    try {
+        const response = await axios.post(apiUrl, item);
+        console.log('Item successfully pushed to liveAuction API:', response.data);
+        return true;
+    } catch (error) {
+        console.error('Error pushing item to liveAuction API:', error);
+        return false;
+    }
+}
 
 async function receiveMessageFromQueue() {
     try {
@@ -30,31 +46,27 @@ async function receiveMessageFromQueue() {
 
             console.log('Item review required:', messageBody);
 
-            if (messageBody.item && messageBody.description) {
+            if (isItemFilledOut(messageBody) && await pushItemToLiveAuctionApi(messageBody)) {
                 const auctionPushParams = {
-                    QueueUrl: liveAuctionQueueUrl,
+                    QueueUrl: auctionQueueUrl,
                     MessageBody: JSON.stringify(messageBody)
                 };
                 await sqsClient.send(new SendMessageCommand(auctionPushParams));
                 console.log('Item approved and pushed to auction queue.');
 
                 const topicArn = 'arn:aws:sns:us-west-2:067714926294:itemSubmission';
-                const notificationMessage = `Auction is beginning for item: ${messageBody.item}. Description: ${messageBody.description}`;
+                const notificationMessage = `Auction is beginning for item: ${messageBody.itemName}. Description: ${messageBody.description}`;
 
                 const publishParams = {
                     TopicArn: topicArn,
                     Message: notificationMessage
                 };
 
-                try {
-                    await snsClient.send(new PublishCommand(publishParams));
-                    console.log('Notification sent to subscribers.');
-                } catch (error) {
-                    console.error('Error sending notification:', error);
-                }
+                await snsClient.send(new PublishCommand(publishParams));
+                console.log('Notification sent to subscribers.');
                 startAuction();
             } else {
-                console.log('Item not approved.');
+                console.log('Item not approved or failed to push to API.');
             }
 
             const deleteParams = {
@@ -72,16 +84,15 @@ async function receiveMessageFromQueue() {
 }
 
 async function startAuction() {
-    const duraction = 5 * 60 * 1000;
-    const timerPromise = () => new Promise(resolve => setTimeout(resolve, duraction));
+    const duration = 45 * 1000;
+    const timerPromise = () => new Promise(resolve => setTimeout(resolve, duration));
     
     console.log('Auction has commenced.');
-
     await timerPromise();
-
     console.log('Auction has finished!');
 }
 
 setInterval(() => {
     receiveMessageFromQueue();
 }, 10 * 1000);
+
