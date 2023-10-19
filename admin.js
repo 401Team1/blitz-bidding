@@ -3,31 +3,71 @@
 const axios = require('axios');
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
-const AWS = require('aws-sdk');
+const { defaultProvider } = require('@aws-sdk/region-provider');
+const { fromIni } = require('@aws-sdk/credential-provider-ini');
+const WebSocket = require('ws');
+const readline = require('readline');
 
-var credentials = new AWS.SharedIniFileCredentials({ profile: 'work-account' });
-AWS.config.credentials = credentials;
-AWS.config.update({ region: 'us-west-2' });
+const REGION = 'us-west-2';
+const PROFILE = 'default';
+
+const sqsClient = new SQSClient({ 
+    region: REGION, 
+    credentials: fromIni({ profile: PROFILE }) 
+});
+const snsClient = new SNSClient({ 
+    region: REGION, 
+    credentials: fromIni({ profile: PROFILE }) 
+});
 
 const itemReviewQueueUrl = 'https://sqs.us-west-2.amazonaws.com/067714926294/itemReview';
 const auctionQueueUrl = 'https://sqs.us-west-2.amazonaws.com/067714926294/liveAuction';
 
-const sqsClient = new SQSClient({ region: 'us-west-2' });
-const snsClient = new SNSClient({ region: 'us-west-2' });
+const wsEndpoint = 'wss://noderk8p63.execute-api.us-west-2.amazonaws.com/production/';
+let ws;
 
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+function setupWebSocket() {
+    ws = new WebSocket(wsEndpoint);
+
+    ws.on('open', function open() {
+        console.log('WebSocket connection established.');
+        setupAdminNameOnSerever('Admin');
+    });
+
+    ws.on('message', function incoming(data) {
+        const message = JSON.parse(data);
+        if(message.type === 'bid') {
+            handleWebSocketMessage(message);
+        }
+    });
+}
+
+function setupAdminNameOnSerever(adminName) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            action: 'setupAdminName',
+            name: adminName,
+        }));
+    } else {
+        console.error('WebSocket connection not established.');
+    }
+}
 let currentAuction = null;
 let bids = [];
 
-function isItemFilledOut(item) {
-    return Object.values(item).every(value => value && value.trim() !== '' && !value.startsWith('Enter'));
-}
-
-// Mock WebSocket message handler
 function handleWebSocketMessage(message) {
     if (message.type === 'bid') {
         bids.push(message.bid);
     }
-    // Handle other WebSocket message types as necessary
+}
+
+function isItemFilledOut(item) {
+    return Object.values(item).every(value => value && value.trim() !== '' && !value.startsWith('Enter'));
 }
 
 async function updateAuctionInDB(auctionDetails, highestBid) {
@@ -47,15 +87,19 @@ async function updateAuctionInDB(auctionDetails, highestBid) {
 
 async function finalizeAuction() {
     try {
+        if (!bids || bids.length === 0) {
+            console.error('No bids received for the auction.');
+            return;
+        }
+
         bids.sort((a, b) => b.amount - a.amount);
         const highestBid = bids[0];
 
         await updateAuctionInDB(currentAuction, highestBid);
 
-        console.log(`Congratulations ${highestBid.bidder}! You've won the auction with a bid of ${highestBid.amount}.`);
+        sendPublicMessageToAllClients('The auction has ended. If you did not recieve a message, your bid was not accepted.');
+        sendPrivateMessageToWinner(highestBid.bidder, `Congratulations ${highestBid.bidder}! You've won the auction with a bid of ${highestBid.amount}.`);
 
-        console.log('The auction has ended. If you did not receive a message, your bid was not accepted.');
-        
         currentAuction = null;
         bids = [];
     } catch (error) {
@@ -63,6 +107,28 @@ async function finalizeAuction() {
     }
 }
 
+function sendPublicMessageToAllClients(message) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('WebSocket connection not established.');
+        return;
+    }
+        ws.send(JSON.stringify({
+            action: 'sendPublic',
+            message: message,
+        }));
+}
+
+function sendPrivateMessageToWinner(winnerId, message) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('WebSocket connection not established.');
+        return;
+    }
+        ws.send(JSON.stringify({
+            action: 'sendPrivate',
+            to: winnerId,
+            message: message,
+        }));
+}
 async function startAuction(auctionDetails) {
     currentAuction = auctionDetails;
 
@@ -93,65 +159,45 @@ async function reviewAndStartNextAuction() {
             if (isItemFilledOut(messageBody)) {
                 console.log('Item approved. Auction can be started by the admin.');
 
-                const endTime = prompt("Enter the auction end time (e.g., '2023-10-17T12:30:00Z'):");
-                messageBody.endTime = endTime;
+                rl.question('Enter the auction end time (in minutes):', (durationInMinutes) => {
+                    const endTime = new Date(Date.now() + durationInMinutes * 60 * 1000).toISOString();
+                    messageBody.endTime = endTime;
+                    console.log(`Auction will end at ${endTime}`);
+                    
+                    const auctionPushParams = {
+                        QueueUrl: auctionQueueUrl,
+                        MessageBody: JSON.stringify(messageBody)
+                    };
+                    (async () => {
+                        await sqsClient.send(new SendMessageCommand(auctionPushParams));
+                        console.log('Item approved and pushed to auction queue.');
 
-                const auctionPushParams = {
-                    QueueUrl: auctionQueueUrl,
-                    MessageBody: JSON.stringify(messageBody)
-                };
-                await sqsClient.send(new SendMessageCommand(auctionPushParams));
-                console.log('Item approved and pushed to auction queue.');
+                        startAuction(messageBody);
 
-                startAuction(messageBody);
+                        const deleteParams = {
+                            QueueUrl: itemReviewQueueUrl,
+                            ReceiptHandle: message.ReceiptHandle,
+                        };
+                        await sqsClient.send(new DeleteMessageCommand(deleteParams));
+                        console.log('Item deleted from review queue.');
+                    })();
+                });
             } else {
                 console.log('Item not approved.');
             }
-
-            const deleteParams = {
-                QueueUrl: itemReviewQueueUrl,
-                ReceiptHandle: message.ReceiptHandle,
-            };
-            await sqsClient.send(new DeleteMessageCommand(deleteParams));
-            console.log('Item deleted from review queue.');
-        } else {
-            console.log('No new items for review.');
         }
     } catch (error) {
         console.error('Error receiving messages:', error);
     }
 }
 
-setInterval(reviewAndStartNextAuction, 10 * 1000);
+setupWebSocket();
 
-function adminConsole() {
-    console.log("Admin Console");
-    console.log("1. Manually review and potentially start next auction");
-    console.log("2. End current auction manually");
-    console.log("3. Exit");
+setInterval(reviewAndStartNextAuction, 30000);
 
-    const choice = prompt("Enter your choice:");
-
-    switch(choice) {
-        case "1":
-            reviewAndStartNextAuction();
-            break;
-        case "2":
-            if (currentAuction) {
-                finalizeAuction();
-            } else {
-                console.log("No ongoing auction to end.");
-            }
-            break;
-        case "3":
-            process.exit();
-            break;
-        default:
-            console.log("Invalid choice.");
-            break;
-    }
-}
-
-adminConsole();
-
-
+module.exports = {
+    isItemFilledOut,
+    handleWebSocketMessage,
+    _test_bids: bids,
+    setupWebSocket
+};
