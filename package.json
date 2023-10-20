@@ -4,7 +4,7 @@
   "description": "## Creators",
   "main": "admin.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest --verbose --coverage",
     "user": "node user.js",
     "admin": "node admin.js"
   },
@@ -17,6 +17,9 @@
     "aws-sdk": "^2.1474.0",
     "axios": "^1.5.1",
     "jest": "^29.7.0",
-    "sqs-consumer": "^7.3.0"
+    "jest-websocket-mock": "^2.5.0",
+    "sqs-consumer": "^7.3.0",
+    "websocket": "^1.0.34",
+    "ws": "^8.14.2"
   }
 }
