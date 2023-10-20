@@ -38,7 +38,7 @@ function setupWebSocket() {
         console.log('WebSocket connection established.');
         ws.send(JSON.stringify({
             action: 'setName',
-            name: 'Admin',
+            name: 'admin',
         }));
     });
 
@@ -71,6 +71,15 @@ function isItemFilledOut(item) {
     );
 }
 
+async function createaAuctionInDB(auctionDetails) {
+    const apiUrl = 'https://51d6k7oxwk.execute-api.us-west-2.amazonaws.com/dev/auctions';
+    try {
+        const response = await axios.post(apiUrl, auctionDetails);
+        console.log('Auction created in DB:', response.data);
+    } catch (error) {
+        console.error('Error creating auction item in DB:', error);
+    }
+}
 async function updateAuctionInDB(auctionDetails, highestBid) {
     const apiUrl = 'https://51d6k7oxwk.execute-api.us-west-2.amazonaws.com/dev/auctions';
     try {
@@ -141,21 +150,24 @@ async function startAuction(auctionDetails) {
         "auctionItem": {
             "id": auctionDetails.id,
             "itemName": auctionDetails.itemName,
-            "itemType": auctionDetails.itemType
+            "itemType": auctionDetails.itemType,
+            "category": auctionDetails.category,
+            "description": auctionDetails.description
         }
     }));
 
     currentAuction = auctionDetails;
 
-    const duration = (new Date(auctionDetails.endTime).getTime() - Date.now());
-    const timerPromise = () => new Promise(resolve => setTimeout(resolve, duration));
-    
-    console.log(`Auction for ${auctionDetails.itemName} has commenced and will end in ${duration / 1000} seconds.`);
-    await timerPromise();
+    // Notify all connected clients about the new auction
+    sendPublicMessageToAllClients(`A new auction has started.`);
+    sendPublicMessageToAllClients(`Item: ${auctionDetails.itemName}`);
+    sendPublicMessageToAllClients(`Description: ${auctionDetails.description}`);
+    sendPublicMessageToAllClients(`Category: ${auctionDetails.category}`);
+    sendPublicMessageToAllClients(`Item Type: ${auctionDetails.itemType}`);
 
-    finalizeAuction();
+    const duration = (new Date(auctionDetails.endTime).getTime() - new Date().getTime());
+    setTimeout(finalizeAuction, duration);
 }
-
 async function reviewAndStartNextAuction() {
     try {
         const pullParams = {
@@ -167,27 +179,29 @@ async function reviewAndStartNextAuction() {
 
         if (response.Messages && response.Messages.length > 0) {
             const message = response.Messages[0];
-            const messageBody = JSON.parse(message.Body);
+            const itemDetails = JSON.parse(message.Body);
 
-            console.log('Item review required:', messageBody);
+            console.log('Item review required:', itemDetails);
 
-            if (isItemFilledOut(messageBody)) {
-                console.log('Item approved. Auction can be started by the admin.');
+            // if (isItemFilledOut(itemDetails)) {
+            //     console.log('Item approved. Auction can be started by the admin.');
 
-                rl.question('Enter the auction end time (in minutes):', (durationInMinutes) => {
+            await createaAuctionInDB(itemDetails);
+
+                rl.question('Enter the auction end time (in minutes):', async (durationInMinutes) => {
                     const endTime = new Date(Date.now() + durationInMinutes * 60 * 1000).toISOString();
-                    messageBody.endTime = endTime;
+                    itemDetails.endTime = endTime;
                     console.log(`Auction will end at ${endTime}`);
 
                     const auctionPushParams = {
                         QueueUrl: auctionQueueUrl,
-                        MessageBody: JSON.stringify(messageBody)
+                        MessageBody: JSON.stringify(itemDetails)
                     };
                     (async () => {
                         await sqsClient.send(new SendMessageCommand(auctionPushParams));
                         console.log('Item approved and pushed to auction queue.');
 
-                        startAuction(messageBody);
+                        await startAuction(itemDetails);
 
                         const deleteParams = {
                             QueueUrl: itemReviewQueueUrl,
@@ -197,9 +211,9 @@ async function reviewAndStartNextAuction() {
                         console.log('Item deleted from review queue.');
                     })();
                 });
-            } else {
-                console.log('Item not approved.');
-            }
+            // } else {
+            //     console.log('Item not approved.');
+            // }
         }
     } catch (error) {
         console.error('Error reviewing items:', error);
