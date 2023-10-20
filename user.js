@@ -1,118 +1,144 @@
 'use strict';
 
 const readline = require('readline');
-const http = require('http');
-const socketIO = require('socket.io'); // Import the socket.io library  
 const AWS = require('aws-sdk');
+const WebSocket = require('ws');
 
 AWS.config.update({ region: 'us-west-2' });
 
 var credentials = new AWS.SharedIniFileCredentials({ profile: 'work-account' });
-AWS.config.credentials = credentials
+AWS.config.credentials = credentials;
 
 const sns = new AWS.SNS();
 
 const topic = 'arn:aws:sns:us-west-2:067714926294:itemSubmission'; // Topic FIFO ARN for creating Item
 
 const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+	input: process.stdin,
+	output: process.stdout,
 });
 
-const event = {};
+const payload = {};
 
-rl.question('Enter item category: ', (category) => {
-    event.category = category;
-    rl.question('Enter your e-mail: ', (createdBy) => {
-        event.createdBy = createdBy;
-        rl.question('Enter item description: ', (description) => {
-            event.description = description;
-            rl.question('Enter item name: ', (itemName) => {
-                event.itemName = itemName;
-                rl.question('Enter type of item: ', (itemType) => {
-                    event.itemType = itemType;
+function createPayload() {
+	rl.question('Enter username: ', (createdBy) => {
+		payload.createdBy = createdBy;
+		rl.question('Enter item name: ', (itemName) => {
+			payload.itemName = itemName;
+			rl.question('Enter item category: ', (category) => {
+				payload.category = category;
+				rl.question('Enter item description: ', (description) => {
+					payload.description = description;
+					rl.question('Enter type of item: ', (itemType) => {
+						payload.itemType = itemType;
+						rl.close();
 
-                    // Close the readline interface
-                    rl.close();
+						const itemPayload = {
+							createdBy: payload.createdBy,
+							itemName: payload.itemName,
+							category: payload.category,
+							description: payload.description,
+							itemType: payload.itemType,
+						};
 
-                    // Create the itemPayload and TopicMessage
-                    const itemPayload = {
-                        category: event.category,
-                        createdBy: event.createdBy,
-                        description: event.description,
-                        itemName: event.itemName,
-                        itemType: event.itemType,
-                    };
+						const TopicMessage = {
+							Subject: 'Item has been created',
+							Message: JSON.stringify(itemPayload),
+							TopicArn: topic,
+						};
 
-                    const TopicMessage = {
-                        Subject: 'Item has been created',
-                        Message: JSON.stringify(itemPayload),
-                        TopicArn: topic,
-                    };
+						sns.publish(TopicMessage).promise()
+							.then(response => {
+								console.log('Response from AWS Topic', response);
+								// Only after the payload is created and sent to AWS, initiate WebSocket connection.
+								serverConnection();
+							})
+							.catch(e => {
+								console.log('Error Occurred on pub', e);
+							});
+					});
+				});
+			});
+		});
+	});
+}
 
-                    // Publish the message to the SNS topic
-                    sns.publish(TopicMessage).promise()
-                        .then(response => {
-                            console.log('Response from AWS Topic', response);
-                        })
-                        .catch(e => {
-                            console.log('Error Occurred on pub', e);
-                        });
-                });
-            });
-        });
-    });
-});
+function serverConnection() {
+	const ws = new WebSocket('wss://noderk8p63.execute-api.us-west-2.amazonaws.com/production');
+	
+	ws.on('open', function open() {
+		console.log('User has connected to auction');
+		ws.send(JSON.stringify({
+			action: 'setName',
+			name: payload.createdBy,
+		}));
+	});
 
-const server = http.createServer((req, res) => {
-    // Your REST API request handling logic here
-    // ...
-});
+	ws.on('message', function incoming(data) {
+		const messageString = data.toString('utf8');
+		console.log("Received:", messageString);
+		const message = JSON.parse(messageString);
 
-const io = socketIO(server); // Create a socket.io server
+		if (message.action === 'auctionStarted') {
+			userPrompt(ws);
+		}
+	});
 
-const rooms = new Map();
+	ws.on('message', function incoming(data) {
+		const messageString = data.toString('utf8');
+		console.log("Received:", messageString);
+	});
 
-io.on('connection', (socket) => {
-    console.log('A user connected');
+	ws.on('close', function close() {
+		console.log('User has left the auction');
+	});
 
-    // User Authentication: Collect and store the username
-    socket.on('login', (username) => {
-        socket.username = username;
-        socket.emit('loginSuccess', username);
-    });
+	ws.on('error', function error(err) {
+		console.log("Connection Error:", err.toString());
+	});
+}
 
-    // Room Management: Join a room
-    socket.on('joinRoom', (roomName) => {
-        socket.join(roomName);
-        // Send room details to the user
-        socket.emit('roomDetails', rooms.get(roomName));
-    });
+function userPrompt(ws) {
+	rl.question('Do you want to bid or send a message? (bid/message/none): ', (answer) => {
+		answer = answer.toLowerCase();
 
-    // Prompt for Messages
-    socket.on('sendMessage', (message, roomName) => {
-        const messageData = { username: socket.username, message };
-        io.to(roomName).emit('newMessage', messageData);
-    });
+		if (answer === 'bid') {
+			rl.question('Enter your bid amount: ', (bidAmount) => {
+				if (!isNaN(bidAmount)) {
+					const amount = parseFloat(bidAmount);
+					ws.send(JSON.stringify({
+						action: 'setName',
+						name: payload.createdBy,
+					}));
+					ws.send(JSON.stringify({
+						action: 'placeBid',
+						amount: amount,
+					}));
+				} else {
+					console.log('Invalid bid amount. Please enter a number.');
+					rl.close();
+					ws.close();
+				}
+			});
+		} else if (answer === 'message') {
+			rl.question('Enter your message: ', (message) => {
+				// Send the message to the server
+				ws.send(JSON.stringify({
+					action: 'sendMessage',
+					message: message,
+				}));
+				rl.close();
+				ws.close();
+			});
+		} else {
+			rl.close();
+			ws.close();
+		}
+	});
+}
 
-    // Prompt for Bids
-    socket.on('submitBid', (bidAmount, roomName) => {
-        const bidId = generateRandomId(); // Generate a random bid identifier
-        const bidData = { username: socket.username, bidId, bidAmount };
-        io.to(roomName).emit('newBid', bidData);
-    });
+createPayload();
 
-    socket.on('disconnect', () => {
-        console.log('A user disconnected');
-    });
-});
-
-const port = 3001; 
-server.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-});
-
-// Helper function to generate a random bid identifier
-function generateRandomId() {
-    return Math.random().toString(36).substring(7);
+module.exports = {
+	serverConnection
 }
