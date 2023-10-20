@@ -21,6 +21,20 @@ const rl = readline.createInterface({
 const payload = {};
 
 function createPayload() {
+	console.log('Welcome to Blitz Bidding! What would you like to do?');
+	rl.question('Enter 1 to list an item or 2 to enter an auction: ', (choice) => {
+		if (choice === '1') {
+			listAnItem();
+		} else if (choice === '2') {
+			serverConnection();
+		} else {
+			console.log('Invalid choice. Please enter 1 or 2.');
+			rl.close();
+		}
+	});
+}
+
+function listAnItem() {
 	rl.question('Enter username: ', (createdBy) => {
 		payload.createdBy = createdBy;
 		rl.question('Enter item name: ', (itemName) => {
@@ -65,7 +79,7 @@ function createPayload() {
 
 function serverConnection() {
 	const ws = new WebSocket('wss://noderk8p63.execute-api.us-west-2.amazonaws.com/production');
-	
+
 	ws.on('open', function open() {
 		console.log('User has connected to auction');
 		ws.send(JSON.stringify({
@@ -99,7 +113,7 @@ function serverConnection() {
 }
 
 function userPrompt(ws) {
-	rl.question('Do you want to bid or send a message? (bid/message/none): ', (answer) => {
+	rl.question('Welcome to the auction room. Would you like to bid or send a message? (bid/message/none): ', (answer) => {
 		answer = answer.toLowerCase();
 
 		if (answer === 'bid') {
@@ -141,4 +155,4 @@ createPayload();
 
 module.exports = {
 	serverConnection
-}
+};
