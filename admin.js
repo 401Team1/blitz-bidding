@@ -36,7 +36,10 @@ function setupWebSocket() {
 
     ws.on('open', function open() {
         console.log('WebSocket connection established.');
-        setupAdminNameOnSerever('Admin');
+        ws.send(JSON.stringify({
+            action: 'setName',
+            name: 'Admin',
+        }));
     });
 
     ws.on('message', function incoming(data) {
@@ -47,27 +50,25 @@ function setupWebSocket() {
     });
 }
 
-function setupAdminNameOnSerever(adminName) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            action: 'setupAdminName',
-            name: adminName,
-        }));
-    } else {
-        console.error('WebSocket connection not established.');
-    }
-}
 let currentAuction = null;
 let bids = [];
 
 function handleWebSocketMessage(message) {
+    console.log("handleWebSocketMessage called with:", message);
     if (message.type === 'bid') {
         bids.push(message.bid);
+        console.log("Bid added:", message.bid);
     }
+    console.log("Current bids array:", bids);
 }
 
 function isItemFilledOut(item) {
-    return Object.values(item).every(value => value && value.trim() !== '' && !value.startsWith('Enter'));
+    const requiredFields = ['createdBy', 'itemName', 'category', 'description', 'itemType'];
+    return requiredFields.every(field => 
+        item[field] && 
+        item[field].trim() !== '' && 
+        !item[field].startsWith('Enter')
+    );
 }
 
 async function updateAuctionInDB(auctionDetails, highestBid) {
@@ -86,6 +87,9 @@ async function updateAuctionInDB(auctionDetails, highestBid) {
 }
 
 async function finalizeAuction() {
+    // Send finalizeAuction action to the server
+    ws.send(JSON.stringify({ "action": "finalizeAuction" }));
+
     try {
         if (!bids || bids.length === 0) {
             console.error('No bids received for the auction.');
@@ -97,7 +101,7 @@ async function finalizeAuction() {
 
         await updateAuctionInDB(currentAuction, highestBid);
 
-        sendPublicMessageToAllClients('The auction has ended. If you did not recieve a message, your bid was not accepted.');
+        sendPublicMessageToAllClients('The auction has ended. If you did not receive a message, your bid was not accepted.');
         sendPrivateMessageToWinner(highestBid.bidder, `Congratulations ${highestBid.bidder}! You've won the auction with a bid of ${highestBid.amount}.`);
 
         currentAuction = null;
@@ -112,10 +116,10 @@ function sendPublicMessageToAllClients(message) {
         console.error('WebSocket connection not established.');
         return;
     }
-        ws.send(JSON.stringify({
-            action: 'sendPublic',
-            message: message,
-        }));
+    ws.send(JSON.stringify({
+        action: 'sendPublic',
+        message: message,
+    }));
 }
 
 function sendPrivateMessageToWinner(winnerId, message) {
@@ -123,13 +127,24 @@ function sendPrivateMessageToWinner(winnerId, message) {
         console.error('WebSocket connection not established.');
         return;
     }
-        ws.send(JSON.stringify({
-            action: 'sendPrivate',
-            to: winnerId,
-            message: message,
-        }));
+    ws.send(JSON.stringify({
+        action: 'sendPrivate',
+        to: winnerId,
+        message: message,
+    }));
 }
+
 async function startAuction(auctionDetails) {
+    // Send startAuction action to the server along with auctionItem details
+    ws.send(JSON.stringify({ 
+        "action": "startAuction",
+        "auctionItem": {
+            "id": auctionDetails.id,
+            "itemName": auctionDetails.itemName,
+            "itemType": auctionDetails.itemType
+        }
+    }));
+
     currentAuction = auctionDetails;
 
     const duration = (new Date(auctionDetails.endTime).getTime() - Date.now());
@@ -163,7 +178,7 @@ async function reviewAndStartNextAuction() {
                     const endTime = new Date(Date.now() + durationInMinutes * 60 * 1000).toISOString();
                     messageBody.endTime = endTime;
                     console.log(`Auction will end at ${endTime}`);
-                    
+
                     const auctionPushParams = {
                         QueueUrl: auctionQueueUrl,
                         MessageBody: JSON.stringify(messageBody)
@@ -187,7 +202,7 @@ async function reviewAndStartNextAuction() {
             }
         }
     } catch (error) {
-        console.error('Error receiving messages:', error);
+        console.error('Error reviewing items:', error);
     }
 }
 
